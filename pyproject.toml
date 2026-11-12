@@ -1,0 +1,33 @@
+[project]
+name = "gameagent"
+version = "0.2.0"
+description = "A2A multi-agent game MVP factory with executable quality gates"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "a2a-sdk==0.3.26",
+  "uvicorn==0.54.0",
+  "httpx==0.28.1",
+  "starlette>=0.41,<1.0",
+  "openai==3.37.0",
+  "dashscope==2.0.1",
+  "transformers==5.20.2",
+  "FlagEmbedding==1.4.2",
+  "torch==2.14.1",
+  "sentencepiece==0.2.2",
+  "sentence-transformers==6.2.0",
+  "pymilvus==3.0.2",
+  "milvus-lite==3.2.2",
+  "neo4j==6.4.1",
+  "asyncmy==0.2.17",
+  "redis==8.1.0",
+  "streamlit==1.66.1",
+  "pandas==3.1.0",
+  "plotly==7.1.0",
+  "playwright==1.64.1",
+  "anyio==4.15.1",
+  "pydantic==2.14.1",
+  "python-dotenv==1.2.4",
+]
+
+[tool.uv]
+package = false

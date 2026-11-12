@@ -1,0 +1,42 @@
+# 已在 Python 3.12 / Windows x64 验证的依赖版本。
+# 安装：uv pip install -r requirements.txt -p .venv
+# 浏览器：.venv\Scripts\python -m playwright install chromium
+
+# A2A 编排
+a2a-sdk==0.3.26
+uvicorn==0.54.0
+httpx==0.28.1
+starlette>=0.41,<1.0
+
+# LLM：阿里云百炼 OpenAI 兼容接口
+openai==3.37.0
+dashscope==2.0.1
+
+# 本地模型：BERT 意图 + BGE-M3 + BGE-reranker
+transformers==5.20.2
+FlagEmbedding==1.4.2
+torch==2.14.1
+sentencepiece==0.2.2
+sentence-transformers==6.2.0
+
+# 向量库：Milvus Lite（Windows 原生）
+pymilvus==3.0.2
+milvus-lite==3.2.2
+
+# 图库与关系库（不可用自动降级）
+neo4j==6.4.1
+asyncmy==0.2.17
+
+# 缓存与前端
+redis==8.1.0
+streamlit==1.66.1
+pandas==3.1.0
+plotly==7.1.0
+
+# 浏览器 QA / 玩家实验
+playwright==1.64.1
+anyio==4.15.1
+
+# 通用
+pydantic==2.14.1
+python-dotenv==1.2.4

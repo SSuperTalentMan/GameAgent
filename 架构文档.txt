@@ -1,0 +1,298 @@
+游戏开发自动化 Agent Demo 架构文档
+====================================
+
+一、技术栈总览
+------------------------------------
+编排协议：a2a-sdk 0.3.x
+LLM：阿里云百炼 qwen3.8-flash（OpenAI 兼容接口）
+意图识别：本地 bert-base-chinese
+向量化：BGE-M3
+重排序：BGE-reranker-v2-m3
+向量库：Milvus Lite（pymilvus[milvus-lite]）
+图数据库：Neo4j
+关系库：MySQL（asyncmy 异步驱动）
+缓存/状态：Redis（redis.asyncio）
+包管理：uv
+编程语言：Python
+
+API Key 通过环境变量读取：
+os.getenv("API_KEY")
+禁止硬编码。
+
+二、分层架构
+------------------------------------
+┌──────────────────────────────────────────────────────────────┐
+│ Orchestrator（A2A Client + Server）                           │
+│ · 暴露 Agent Card：/.well-known/agent-card.json               │
+│ · BERT 意图识别 → 决定派发哪个 Agent                           │
+│ · 产物所有权表 + 修复轮次上限 + 检查点                          │
+└──────────┬──────────────┬──────────────┬──────────────┬──────┘
+           │ A2A skill 路由（按 Agent Card 发现）
+           ▼              ▼              ▼              ▼
+   ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐
+   │  Spec      │  │  Engineer  │  │  Modeler   │  │  QA        │
+   │  Agent     │  │  Agent     │  │  Agent     │  │  Agent     │
+   │ 结构化契约  │  │ 游戏代码    │  │ 3D/2D资产   │  │ 运行时证据  │
+   └─────┬──────┘  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘
+         │               │               │               │
+         ▼               ▼               ▼               ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │ 共享基础设施层                                               │
+   │ MySQL：规格/断言/审查报告/任务状态                            │
+   │ Neo4j：机制依赖图                                            │
+   │ Milvus Lite：RAG 检索（引擎文档/设计模式/修复经验）            │
+   │ Redis：任务状态 / LLM 缓存                                    │
+   │ LLM Gateway：openai SDK → 百炼 base_url，qwen3.8-flash       │
+   └─────────────────────────────────────────────────────────────┘
+           │
+           ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │ Reviewer Agent（可选 P1）：静态审查，与 QA 平行，由编排器调用  │
+   └─────────────────────────────────────────────────────────────┘
+
+三、五个 Agent 的职责边界（Demo 版本）
+------------------------------------
+1. Orchestrator
+   - 不产出业务 artifact。
+   - 启动时通过 A2A 发现所有 Agent 的 Agent Card。
+   - 收到用户输入后先过本地 BERT 做意图分类：
+     new_requirement / fix / query。
+   - 按意图和产物所有权表路由。
+   - Redis 维护任务状态：
+     submitted → working → completed / failed。
+   - MySQL 维护产物-所有者映射。
+   - 修复任务永远回到该产物的生产者，不回到 QA。
+
+2. Spec Agent
+   - 接收原始需求，调用 qwen3.8-flash 产出结构化 JSON 规格。
+   - 至少包含：
+     core_loop、entities、rules、win_condition、lose_condition、
+     acceptance_assertions。
+   - acceptance_assertions 为可执行的自然语言断言，供 QA 使用。
+   - 将机制依赖关系写入 Neo4j，例如：
+     “胜利判定” DEPENDS_ON “伤害计算”。
+
+3. Engineer Agent
+   - 根据规格生成游戏代码。
+   - Demo 阶段目标引擎锁定 Web/Canvas 或 Phaser。
+   - 产物为可直接在浏览器打开的 HTML/JS 文件。
+   - 每次修改必须附带“本次修改声称解决的契约条目 ID”，
+     供编排器判断修复是否闭环。
+
+4. Modeler Agent
+   - 产出 3D/2D 资产 artifact（.glb / .png 等）。
+   - Demo 阶段不接入 Blender MCP。
+   - 先用 procedural 几何体或占位资产跑通“资产 artifact 被集成进构建”的链路。
+   - 资产生产可与编码并行。
+
+5. QA Agent
+   - 代码盲验证。
+   - 读取 Spec 中的 acceptance_assertions。
+   - 驱动无头浏览器（Playwright）跑核心路径 playthrough。
+   - 产出通过/失败 + 定位信息（哪条断言、哪个环节失败）。
+   - 失败证据写入 MySQL，由编排器路由回 Engineer 或 Modeler。
+
+四、存储层分工
+------------------------------------
+MySQL：
+  - specs 表：结构化规格 JSON
+  - assertions 表：断言状态
+  - review_reports 表：审查报告
+  - task_state 表：任务状态
+  说明：规格和断言需要事务性更新和可查询状态；
+  Demo 阶段可用 JSON 字段，不必过度范式化。
+
+Milvus Lite：
+  - 引擎 API 文档 chunk
+  - 设计模式 chunk
+  - 历史修复经验 chunk
+  - 均用 BGE-M3 向量化
+  - 零部署：MilvusClient("./milvus_demo.db")
+  - 与 Standalone API 兼容，后续扩展只需换 URI。
+
+Neo4j：
+  - 节点：(Mechanism {id, name})
+  - 边：[:DEPENDS_ON]
+  - 用途：断言失败时快速查询受影响的机制范围。
+  - Demo 阶段只存 Spec Agent 产出的依赖关系，不做复杂图算法。
+
+Redis：
+  - task:{id}:status
+  - agent:{name}:heartbeat
+  - LLM 调用缓存（按 prompt hash）
+  - 用途：编排器快速读写任务状态；
+    LLM 缓存降低多次修复迭代的百炼调用成本。
+
+五、RAG 检索链路
+------------------------------------
+query
+  → BGE-M3 编码
+  → Milvus Lite 向量召回 top-20
+  → BGE-reranker-v2-m3 精排 top-5
+  → 拼入 qwen3.8-flash 的 context
+
+重排序使用：
+pymilvus.model.reranker.BGERerankFunction
+model_name="BAAI/bge-reranker-v2-m3"
+
+Demo 阶段索引 chunk 来源：
+  - 十几篇 Phaser 文档
+  - 游戏设计模式笔记
+  - 历史修复经验
+先验证链路可用，不追求语料规模。
+
+六、LLM 调用方式
+------------------------------------
+百炼 qwen3.8-flash 兼容 OpenAI 接口。
+
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.getenv("API_KEY"),
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+)
+
+resp = client.chat.completions.create(
+    model="qwen3.8-flash",
+    messages=[...],
+)
+
+Demo 阶段所有 Agent 共用该 client。
+编排层为每个 Agent 配置不同 system_prompt 和 temperature：
+  - Spec：偏高温度，鼓励澄清
+  - Engineer：偏低温度，稳定生成
+  - QA：温度为 0
+
+七、Demo 最小可行边界
+------------------------------------
+P0 必须做：
+  - Orchestrator 的 A2A Agent Card 暴露
+  - 至少一个下游 Agent 的 Card 发现与消息收发
+  - BERT 意图识别的一条可用路径（可规则兜底，但链路上要有 BERT 调用位置）
+  - Spec Agent 产出结构化 JSON + 至少 3 条可执行断言
+  - Engineer 产出一个能在浏览器打开的 Canvas/Phaser 游戏
+  - QA 用 Playwright 跑一条核心路径：
+    开始 → 触发胜利 → 显示胜利文案
+  - Milvus Lite 的 RAG 链路跑通（哪怕索引只有 20 条 chunk）
+  - MySQL 落库规格、断言、审查报告
+  - Redis 存任务状态
+
+P1 可以做但不必完美：
+  - Neo4j 依赖图写入和一次简单的影响查询
+  - Modeler 产出占位 .glb 并集成进构建
+  - Reviewer Agent 的静态审查（与 QA 平行，审查报告写入 MySQL）
+  - BGE-reranker 精排生效（召回 top-20 → 精排 top-5）
+
+Demo 阶段明确不做：
+  - 多 Agent 并行冲突的复杂锁机制
+    （Demo 先串行，Engineer 和 Modeler 并行链路用 asyncio.gather）
+  - 接入 Blender MCP 或真实 3D 资产生成
+  - 大规模语料索引和复杂图算法
+  - 生产级沙盒隔离
+    （但执行生成代码时仍要用子进程隔离，不要 exec 到主进程）
+
+八、后续扩展优先级
+------------------------------------
+Demo 跑通后，第一优先级不是加 Agent，而是：
+把 QA 的核心路径 playthrough 从“一条”变成
+“按 Spec 断言自动生成多条”。
+
+原因：
+Agent 构建的游戏在构建集成上得分较高，
+但 gameplay 得分通常不到一半。
+一条固定 playthrough 只能验证“能跑”，
+多条断言驱动的 playthrough 才能验证“做对了”。
+
+Milvus Lite 和 A2A SDK 的 API 兼容性意味着：
+这层扩展不需要推翻 Demo 数据结构，
+只需在 QA Agent 的 skill 中增加断言解析和执行循环。
+
+九、扩展需求：AI 玩家模拟、市场验证、多模态、打包发布、前端
+================================================================
+
+9.1 需求来源与差距
+------------------------------------
+原 Demo 只覆盖"生成 → 运行时验证 → 修复"闭环，
+不覆盖"市场价值验证"和"发布交付"。本次新增：
+
+R1 AI 玩家模拟测试（100 → 1000 玩家并发）
+R2 市场/运营价值验证（留存、付费漏斗、流失点）
+R3 多模态资产生成（文生图、文生 3D）
+R4 构建打包发布（Android APK；iOS 接口预留）
+R5 前端界面（Streamlit Demo）
+R6 Agent 工具调用能力强化
+
+9.2 新增 Agent
+------------------------------------
+⑥ Player Simulation Agent
+   - 输入：构建产物 + 玩家策略模板（来自 Milvus Lite）
+   - 执行：Playwright 多 context 并发，asyncio.Semaphore 控并发上限
+   - 决策：规则策略为主，LLM 仅在关键决策点介入（成本控制）
+   - 输出：player_events 行为日志（MySQL）
+   - 不判断"好不好"，只产生数据
+
+⑦ Market Validation Agent
+   - 输入：player_events + Spec 中的设计意图
+   - 计算：模拟留存曲线、关卡完成率、付费转化漏斗、流失点分布
+   - 输出：validation_reports（MySQL）+ 前端可视化数据
+   - 预留真实运营数据 adapter
+
+⑧ Build & Deploy Agent
+   - H5 构建 → Capacitor 打包 Android APK
+   - iOS 打包接口预留（需 macOS + Xcode 环境）
+   - 输出：APK 路径 + 部署 URL + 构建日志
+
+③' 多模态 Asset Agent（原 Modeler 升级）
+   - 文生图：百炼万相 wanx 系列
+   - 文生 3D：接口预留 + 占位降级路径
+   - 输出：资产文件路径 + 元数据
+
+9.3 前端层（Streamlit）
+------------------------------------
+   - 需求输入 → 编排器 → 实时 Agent 状态
+   - 游戏预览（iframe 嵌入 H5）
+   - 验证报告图表（plotly：留存曲线、付费漏斗）
+   - 一键打包 + APK 下载
+
+9.4 存储层新增表
+------------------------------------
+MySQL 新增：
+  - player_events（session_id, event_type, timestamp, payload）
+  - validation_reports（report_id, spec_id, metrics_json, summary）
+  - build_artifacts（build_id, platform, file_path, deploy_url）
+
+Redis 新增：
+  - sim:{session_id}:state（模拟会话实时状态）
+  - sim:pool:active（当前活跃模拟玩家数）
+
+Milvus Lite 新增集合：
+  - player_strategy_templates（玩家策略模板向量库）
+
+9.5 成本与并发控制原则
+------------------------------------
+- 玩家模拟默认"规则策略为主、LLM 关键点介入"，
+  避免 N 玩家 × M 步的 token 成本爆炸。
+- Demo 并发上限 10–50；扩展阶段通过增加 Playwright
+  实例和多机部署扩到 100–1000。
+- qwen3.8-flash 用于：策略模板生成、关键决策判断、
+  验证报告撰写；不用于逐帧决策。
+
+9.6 更新后的 Demo 边界
+------------------------------------
+P0（新增）：
+  - Player Simulation 跑通 10 并发 × 1 种策略模板
+  - Market Validation 产出 1 份含留存/付费指标的验证报告
+  - 多模态 Asset 至少跑通文生图一条路径
+  - Build & Deploy 产出 1 个可安装的 Android APK
+  - Streamlit 前端可输入需求、看进度、看报告、下载 APK
+
+P1（新增）：
+  - Player Simulation 扩展到 50 并发 × 4 种策略
+  - 文生 3D 降级路径跑通
+  - iOS 打包接口文档化
+
+明确不做：
+  - 真实上线后的运营数据接入（只预留 adapter）
+  - 1000 并发压测（Demo 阶段只验证架构可扩展性）
+  - 复杂的前端工程化（Streamlit 够用即可）

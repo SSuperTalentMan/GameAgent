@@ -1,0 +1,35 @@
+# 密钥与本地环境
+.env
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 本地大模型（体积过大，按需自行下载）
+bert-base-chinese/
+bge-m3/
+bge-reranker-v2-m3/
+
+# 运行产物与本地数据
+generated/
+milvus_demo.db/
+*.log
+logs/
+
+# 安卓构建工具链
+tools/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 个人工作区与求职内部材料（不进公开仓库）
+.workbuddy/
+docs/00-投递说明.md
+docs/04-面试讲法与高频追问.md
